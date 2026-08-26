@@ -1,0 +1,6 @@
+build/
+build86/
+out/
+.vs/
+.vscode/
+*.user
