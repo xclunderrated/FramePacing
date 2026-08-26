@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "display_clock.h"
 
 #include <algorithm>
@@ -55,17 +55,25 @@ void DisplayClock::on_frame_presented(IDXGISwapChain* sc) {
     prev_sync_count_ = cnt;
     have_prev_ = true;
 
-    if (hist_n_ >= 15) {
+    if (hist_n_ >= 21) {
         double sorted[kHistCap];
         memcpy(sorted, period_hist_, sizeof(double) * hist_n_);
         std::sort(sorted, sorted + hist_n_);
-        double median = sorted[hist_n_ / 2];
+        
+        // Trim 20% extremes (10% lower, 10% upper) to eliminate DWM glitch outliers
+        size_t trim_count = hist_n_ / 10;
+        size_t valid_count = hist_n_ - (2 * trim_count);
+        double sum = 0.0;
+        for (size_t i = trim_count; i < hist_n_ - trim_count; ++i) {
+            sum += sorted[i];
+        }
+        double filtered_period = (valid_count > 0) ? (sum / (double)valid_count) : sorted[hist_n_ / 2];
 
         sample_.valid = true;
-        sample_.period_ticks = median;
+        sample_.period_ticks = filtered_period;
         sample_.last_vbi_qpc = t;
 
-        // Slide the window by half for continuous updates
+        // Slide the window by half for continuous smooth updates
         size_t keep = hist_n_ / 2;
         memmove(period_hist_, period_hist_ + (hist_n_ - keep), sizeof(double) * keep);
         hist_n_ = keep;

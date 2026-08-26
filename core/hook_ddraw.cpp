@@ -1,10 +1,11 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "hook_ddraw.h"
 
 #include <MinHook.h>
 #include <ddraw.h>
 
 #include "engine_context.h"
+#include "hooks_common.h"
 #include "log.h"
 
 namespace pacer {
@@ -24,29 +25,43 @@ PFN_Blt g_origBlt = nullptr;
 
 HRESULT STDMETHODCALLTYPE Hooked_Flip(IDirectDrawSurface7* s, LPDDSURFACEDESC2 d, DWORD f) {
     if (!s || !g_origFlip) return DDERR_INVALIDPARAMS;
-
-    __try {
-        pre_present(PacerApi_DDraw, nullptr, false);
-        HRESULT hr = g_origFlip(s, d, f);
-        post_present(PacerApi_DDraw, nullptr, false);
-        return hr;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (hooks_is_ejecting()) {
         return g_origFlip(s, d, f);
     }
+
+    HookGuard guard;
+
+    return [&]() -> HRESULT {
+        __try {
+            pre_present(PacerApi_DDraw, nullptr, false);
+            HRESULT hr = g_origFlip(s, d, f);
+            post_present(PacerApi_DDraw, nullptr, false);
+            return hr;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return g_origFlip(s, d, f);
+        }
+    }();
 }
 
 HRESULT STDMETHODCALLTYPE Hooked_Blt(IDirectDrawSurface7* dst, LPRECT r,
                                      IDirectDrawSurface7* src, LPRECT sr, DWORD f, LPDDBLTFX fx) {
     if (!dst || !g_origBlt) return DDERR_INVALIDPARAMS;
-
-    __try {
-        pre_present(PacerApi_DDraw, nullptr, false);
-        HRESULT hr = g_origBlt(dst, r, src, sr, f, fx);
-        post_present(PacerApi_DDraw, nullptr, false);
-        return hr;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (hooks_is_ejecting()) {
         return g_origBlt(dst, r, src, sr, f, fx);
     }
+
+    HookGuard guard;
+
+    return [&]() -> HRESULT {
+        __try {
+            pre_present(PacerApi_DDraw, nullptr, false);
+            HRESULT hr = g_origBlt(dst, r, src, sr, f, fx);
+            post_present(PacerApi_DDraw, nullptr, false);
+            return hr;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return g_origBlt(dst, r, src, sr, f, fx);
+        }
+    }();
 }
 
 bool resolve_vtable(void*** vt_out) {

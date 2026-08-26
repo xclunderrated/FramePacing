@@ -1,13 +1,15 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "pacing.h"
 
-#include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <avrt.h>
 
 #include "log.h"
 #include "shared/shm.h"
 
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "avrt.lib")
 
 namespace pacer {
 
@@ -38,9 +40,23 @@ HybridWait::HybridWait() {
         PLOG("HybridWait: high-res waitable timer unavailable, err=%lu (spin-only fallback)",
              GetLastError());
     }
+
+    // Boost priority with MMCSS ("Games" scheduling class) for render thread immunity
+    DWORD task_index = 0;
+    mmcss_task_ = AvSetMmThreadCharacteristicsW(L"Games", &task_index);
+    if (mmcss_task_) {
+        AvSetMmThreadPriority(mmcss_task_, AVRT_PRIORITY_CRITICAL);
+        mmcss_enabled_ = true;
+    }
+    timeBeginPeriod(1);
 }
 
 HybridWait::~HybridWait() {
+    if (mmcss_task_) {
+        AvRevertMmThreadCharacteristics(mmcss_task_);
+        mmcss_task_ = nullptr;
+    }
+    timeEndPeriod(1);
     if (timer_) CloseHandle(timer_);
 }
 
@@ -95,6 +111,7 @@ void PacerEngine::configure(const PacerConfig& cfg) {
 void PacerEngine::reanchor(std::uint64_t now) {
     next_target_ticks_ = (double)now + period_ticks_;
     initialized_ = true;
+    pll_integral_err_ = 0.0;
 }
 
 void PacerEngine::retune(const DisplaySample& disp) {
@@ -103,16 +120,52 @@ void PacerEngine::retune(const DisplaySample& disp) {
                       (double)freq_ / disp.period_ticks >= 24.0 &&
                       (double)freq_ / disp.period_ticks <= 500.0;
 
+    double measured_hz = clock_good ? ((double)freq_ / disp.period_ticks) : 144.0;
+    vrr_max_hz_ = measured_hz;
+
+    if (cfg_.mode == PacerMode_VrrLive) {
+        // VRR Live (G-Sync / FreeSync / Adaptive Sync):
+        // 1. Dynamic VRR Auto-Ceiling: If target FPS is at or near display refresh,
+        //    clamp to (DisplayHz - 3.0 FPS) to guarantee staying inside the hardware VRR envelope.
+        double effective_target_fps = cfg_.target_fps;
+        if (effective_target_fps >= measured_hz - 0.5 || effective_target_fps <= 0.0) {
+            effective_target_fps = std::max(24.0, measured_hz - 3.0);
+            PLOG("VRR Live: Auto-clamped to -3 FPS ceiling: %.3f FPS (on %.2f Hz VRR panel)",
+                 effective_target_fps, measured_hz);
+        }
+
+        // 2. Low Framerate Compensation (LFC): If target FPS < 48 Hz, compute frame multiplier
+        if (effective_target_fps < vrr_min_hz_ && effective_target_fps > 0.0) {
+            vrr_lfc_multiplier_ = std::ceil(vrr_min_hz_ / effective_target_fps);
+        } else {
+            vrr_lfc_multiplier_ = 1.0;
+        }
+
+        period_ticks_ = (effective_target_fps > 0.0) ? ((double)freq_ / effective_target_fps) : user_period;
+        vrr_smoothed_period_ticks_ = period_ticks_;
+        is_display_divisor_ = false;
+        last_disp_period_ = disp.period_ticks;
+        return;
+    }
+
+    if (cfg_.mode == PacerMode_Async) {
+        // Async Mode: Decoupled independent pacing for multi-monitor, D3D9, OpenGL, Vulkan
+        // Exact 64-bit float QPC period with zero cumulative rounding drift
+        period_ticks_ = user_period;
+        async_fractional_remainder_ = 0.0;
+        is_display_divisor_ = false;
+        last_disp_period_ = disp.period_ticks;
+        return;
+    }
+
     if ((cfg_.mode == PacerMode_DisplayLocked || cfg_.mode == PacerMode_LatencyFirst) &&
         clock_good && cfg_.target_fps > 1.0) {
-        double measured_hz = (double)freq_ / disp.period_ticks;
-        
         // 1. Check integer divisors: 1:1, 1:2, 1:3, 1:4, etc.
         double k = std::round(measured_hz / cfg_.target_fps);
         if (k >= 1.0 && k <= 16.0) {
             double snapped_hz = measured_hz / k;
             double err_pct = std::fabs(snapped_hz - cfg_.target_fps) / cfg_.target_fps;
-            if (err_pct <= 0.008) {  // within 0.8% of integer divisor (e.g. 59.94Hz on 60fps or 119.88Hz on 120fps)
+            if (err_pct <= 0.008) {  // within 0.8% of integer divisor
                 is_display_divisor_ = true;
                 double new_period = disp.period_ticks * k;
                 if (std::fabs(new_period - period_ticks_) > period_ticks_ * 1.0e-5) {
@@ -160,7 +213,7 @@ void PacerEngine::retune(const DisplaySample& disp) {
     period_ticks_ = user_period;
 }
 
-void PacerEngine::pace_frame(std::uint64_t now_qpc, const DisplaySample& disp) {
+void PacerEngine::pace_frame(std::uint64_t now_qpc, const DisplaySample& disp, double measured_gpu_ms) {
     if (cfg_.target_fps <= 1.0 || cfg_.target_fps >= 5000.0 || period_ticks_ <= 0.0) {
         pending_back_budget_ = 0.0;
         return;
@@ -172,7 +225,10 @@ void PacerEngine::pace_frame(std::uint64_t now_qpc, const DisplaySample& disp) {
 
     // Measure actual frame workload (render duration since last frame's start)
     if (last_frame_start_qpc_ > 0 && now_qpc >= last_frame_start_qpc_) {
-        double render_ticks = (double)(now_qpc - last_frame_start_qpc_);
+        double cpu_render_ticks = (double)(now_qpc - last_frame_start_qpc_);
+        double gpu_render_ticks = (measured_gpu_ms > 0.0) ? (measured_gpu_ms / 1000.0 * (double)freq_) : 0.0;
+        double render_ticks = std::max(cpu_render_ticks, gpu_render_ticks);
+
         if (avg_render_ticks_ <= 0.0) {
             avg_render_ticks_ = render_ticks;
             peak_render_ticks_ = render_ticks;
@@ -182,14 +238,35 @@ void PacerEngine::pace_frame(std::uint64_t now_qpc, const DisplaySample& disp) {
         }
     }
 
-    // Deterministic Rigid Sequence Scheduling:
-    // If not initialized, or if a hitch occurred (> 1.5 frame interval late), re-anchor cleanly.
-    if (!initialized_ || (double)now_qpc > next_target_ticks_ + (1.5 * period_ticks_)) {
-        next_target_ticks_ = (double)now_qpc + period_ticks_;
+    // Deterministic Rigid Sequence Scheduling + Anti-Windup Hitch Recovery:
+    // If not initialized, or if a hitch occurred (> 1.25 frame interval late),
+    // re-anchor to the next scheduled interval without queuing burst catch-up frames.
+    if (!initialized_ || (double)now_qpc > next_target_ticks_ + (1.25 * period_ticks_)) {
+        if (cfg_.mode == PacerMode_VrrLive) {
+            // VRR Live: Instant zero-lag re-anchor on demand (no fixed VBI lock needed)
+            next_target_ticks_ = (double)now_qpc + period_ticks_;
+            vrr_smoothed_period_ticks_ = period_ticks_;
+        } else if (cfg_.mode == PacerMode_Async) {
+            // Async: Pure independent 64-bit zero-drift clock anchor
+            next_target_ticks_ = (double)now_qpc + period_ticks_;
+            async_fractional_remainder_ = 0.0;
+        } else if (disp.valid && disp.period_ticks > 0.0 && is_display_divisor_) {
+            // Instant zero-lag VBI phase re-alignment after hitch
+            double offset = std::fmod((double)now_qpc - (double)disp.last_vbi_qpc, disp.period_ticks);
+            next_target_ticks_ = (double)now_qpc + (disp.period_ticks - offset);
+        } else {
+            next_target_ticks_ = (double)now_qpc + period_ticks_;
+        }
         initialized_ = true;
         pll_integral_err_ = 0.0;
     } else {
-        next_target_ticks_ += period_ticks_;
+        if (cfg_.mode == PacerMode_VrrLive) {
+            // VRR OLED/VA Gamma-Flicker Mitigation: apply gentle critically damped interval filter
+            vrr_smoothed_period_ticks_ = 0.90 * vrr_smoothed_period_ticks_ + 0.10 * period_ticks_;
+            next_target_ticks_ += vrr_smoothed_period_ticks_;
+        } else {
+            next_target_ticks_ += period_ticks_;
+        }
     }
 
     // Latency-First (Latent Sync): split idle between a front-edge wait that
@@ -225,15 +302,15 @@ void PacerEngine::pace_frame(std::uint64_t now_qpc, const DisplaySample& disp) {
         err = std::fmod(err + 0.5 * p, p) - 0.5 * p;
 
         // Critically damped phase-lock filter:
-        // When phase error is within the 40 Âµs safe VBI deadband, apply ZERO correction
+        // When phase error is within the 40 µs safe VBI deadband, apply ZERO correction
         // to maintain an absolutely rigid, flat frametime baseline (zero harmonic waves).
-        // Outside the deadband, apply a heavily damped sub-microsecond slew rate (max 0.2 Âµs/frame)
+        // Outside the deadband, apply a heavily damped sub-microsecond slew rate (max 0.2 µs/frame)
         // that gently steers the presentation flip into VBI without overshoot or resonance.
         double err_us = err * 1.0e6 / (double)freq_;
         pll_phase_us_ = err_us;
 
         if (std::fabs(err_us) > 40.0) {
-            double slew_limit = 0.0000002 * (double)freq_; // max 0.2 Âµs step per frame
+            double slew_limit = 0.0000002 * (double)freq_; // max 0.2 µs step per frame
             double steer = 0.0004 * err;
             if (steer > slew_limit) steer = slew_limit;
             if (steer < -slew_limit) steer = -slew_limit;

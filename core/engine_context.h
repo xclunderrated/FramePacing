@@ -9,6 +9,10 @@
 
 #include "display_clock.h"
 #include "pacing.h"
+#include "gpu_query.h"
+#include "vrr_detector.h"
+#include "mpo_observer.h"
+#include "front_pacer.h"
 #include "shm.h"
 
 namespace pacer {
@@ -16,18 +20,23 @@ namespace pacer {
 struct EngineContext {
     PacerEngine engine;
     DisplayClock display;               // only meaningful for DXGI primaries
+    GpuQueryTracker gpu_tracker;        // measures hardware GPU execution time
     void* primary_swapchain = nullptr;  // active rendering swapchain
     std::uint64_t last_present_qpc = 0;
     double applied_fps = -1.0;
     std::uint32_t applied_mode = 0xFFFFFFFFu;
     double applied_bias = -1.0;
     volatile std::uint32_t path_api = 0;
+    bool vrr_supported = false;
+    double recommended_vrr_cap = 0.0;
+    CompositionTier composition_tier = CompositionTier_Unknown;
     SRWLOCK lock = SRWLOCK_INIT;
 };
 
 EngineContext& ctx();
 
 void ctx_init();
+void ctx_shutdown();
 
 // Front-edge pacing: called immediately BEFORE the real present function executes.
 bool pre_present(std::uint32_t api, void* sc, bool is_dummy);

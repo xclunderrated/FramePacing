@@ -7,6 +7,7 @@ import { LiveBenchmarkView } from './components/LiveBenchmarkView';
 import { SharedMemoryInspector } from './components/SharedMemoryInspector';
 import { CodeFixExplainer } from './components/CodeFixExplainer';
 import { RepoFileViewer } from './components/RepoFileViewer';
+import { ProductionPlanViewer } from './components/ProductionPlanViewer';
 import {
   Search,
   Wifi,
@@ -19,6 +20,7 @@ import {
   Database,
   FileCode,
   Sparkles,
+  BookOpen,
 } from 'lucide-react';
 
 const AVAILABLE_PROCESSES: ProcessTarget[] = [
@@ -42,7 +44,7 @@ export default function App() {
   const [delayBias, setDelayBias] = useState<number>(0.0);
   const [selectedProcess, setSelectedProcess] = useState<ProcessTarget>(AVAILABLE_PROCESSES[0]);
   const [isGraphOpen, setIsGraphOpen] = useState<boolean>(true);
-  const [activeTab, setActiveTab] = useState<'workspace' | 'shm' | 'diagnostics'>('workspace');
+  const [activeTab, setActiveTab] = useState<'workspace' | 'shm' | 'diagnostics' | 'plan'>('workspace');
 
   // Time state for Windows taskbar clock
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('6:19 AM');
@@ -143,6 +145,13 @@ export default function App() {
 
   const lastUiUpdateRef = useRef<number>(0);
 
+  const handleInjectHitch = (durationMs: number = 48) => {
+    engineRef.current.injectHitch(durationMs);
+    const newTelem = engineRef.current.getTelemetry();
+    setTelemetry(newTelem);
+    setShmState(engineRef.current.getSharedMemoryState());
+  };
+
   // Synchronous pacing tick called on each frame by the rendering benchmark
   const handlePaceFrame = (simulatedRenderTimeMs: number) => {
     const now = performance.now();
@@ -188,6 +197,17 @@ export default function App() {
           >
             <Layout className="w-3.5 h-3.5" />
             <span>Desktop Workspace</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('plan')}
+            className={`flex items-center space-x-1.5 px-3 py-1 rounded transition-colors ${
+              activeTab === 'plan'
+                ? 'bg-cyan-500 text-zinc-950 font-bold shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            <span>Production Plan</span>
           </button>
           <button
             onClick={() => setActiveTab('shm')}
@@ -256,6 +276,7 @@ export default function App() {
                 telemetry={telemetry}
                 mode={mode}
                 onPaceFrame={handlePaceFrame}
+                onInjectHitch={handleInjectHitch}
               />
 
               {/* Frametime Oscilloscope Waveform */}
@@ -268,6 +289,12 @@ export default function App() {
                 />
               )}
             </div>
+          </div>
+        )}
+
+        {activeTab === 'plan' && (
+          <div className="max-w-5xl w-full">
+            <ProductionPlanViewer />
           </div>
         )}
 

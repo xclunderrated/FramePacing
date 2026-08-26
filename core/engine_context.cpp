@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "engine_context.h"
 
 #include "log.h"
@@ -21,6 +21,15 @@ void ctx_init() {
     g_ctx.applied_fps = cfg.target_fps;
     g_ctx.applied_mode = cfg.mode;
     g_ctx.applied_bias = cfg.delay_bias;
+    ReleaseSRWLockExclusive(&g_ctx.lock);
+}
+
+void ctx_shutdown() {
+    AcquireSRWLockExclusive(&g_ctx.lock);
+    g_ctx.primary_swapchain = nullptr;
+    g_ctx.gpu_tracker.reset();
+    g_ctx.display.reset();
+    g_ctx.path_api = 0;
     ReleaseSRWLockExclusive(&g_ctx.lock);
 }
 
@@ -55,8 +64,14 @@ bool pre_present(std::uint32_t api, void* sc, bool is_dummy) {
 
     // FRONT-EDGE PACING: Pace the frame BEFORE submitting present to the driver/GPU.
     if (shm_state() == PacerState_Limited) {
+        double measured_gpu = 0.0;
+        if (api == PacerApi_Dxgi && sc != nullptr) {
+            g_ctx.gpu_tracker.on_pre_present(static_cast<IDXGISwapChain*>(sc));
+            measured_gpu = g_ctx.gpu_tracker.gpu_duration_ms();
+        }
+
         AcquireSRWLockShared(&g_ctx.lock);
-        g_ctx.engine.pace_frame(qpc_now(), g_ctx.display.current());
+        g_ctx.engine.pace_frame(qpc_now(), g_ctx.display.current(), measured_gpu);
         ReleaseSRWLockShared(&g_ctx.lock);
     }
 
@@ -72,7 +87,9 @@ void post_present(std::uint32_t api, void* sc, bool is_dummy) {
     if (is_dummy) return;
 
     if (api == PacerApi_Dxgi && sc) {
-        g_ctx.display.on_frame_presented(static_cast<IDXGISwapChain*>(sc));
+        IDXGISwapChain* dxgi_sc = static_cast<IDXGISwapChain*>(sc);
+        g_ctx.display.on_frame_presented(dxgi_sc);
+        g_ctx.gpu_tracker.on_post_present(dxgi_sc);
     }
 
     DisplaySample s = g_ctx.display.current();

@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "loader_watch.h"
 
 #include <windows.h>
@@ -75,6 +75,21 @@ bool loader_watch_install() {
     }
     PLOG("loader notifications armed");
     return true;
+}
+
+void loader_watch_uninstall() {
+    if (g_cookie) {
+        auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll) {
+            using FUnreg = NTSTATUS(NTAPI*)(void* cookie);
+            auto unreg = reinterpret_cast<FUnreg>(GetProcAddress(ntdll, "LdrUnregisterDllNotification"));
+            if (unreg) {
+                unreg(g_cookie);
+            }
+        }
+        g_cookie = nullptr;
+        PLOG("loader notifications unhooked");
+    }
 }
 
 void loader_watch_poll() {

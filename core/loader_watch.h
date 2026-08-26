@@ -7,6 +7,8 @@
 namespace pacer {
 
 bool loader_watch_install();
+void loader_watch_uninstall();
 void loader_watch_poll();  // call ~4 Hz from the worker thread
 
 }  // namespace pacer
+

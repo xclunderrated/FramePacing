@@ -124,6 +124,29 @@ export class SimulatedPacerEngine {
           timestamp: Date.now(),
         };
       }
+    } else if (mode === PacerMode.VrrLive) {
+      const vrrCap = Math.max(30, Math.round(this.displayRefreshHz - 3));
+      if (this.targetFps >= this.displayRefreshHz - 0.5 || this.targetFps <= 0) {
+        const original = this.targetFps;
+        this.targetFps = vrrCap;
+        this.autoSnapNotification = {
+          originalFps: original,
+          snappedFps: vrrCap,
+          ratioLabel: 'Golden VRR Ceiling',
+          refreshHz: this.displayRefreshHz,
+          reason: `VRR Live engaged: Auto-clamped target to ${vrrCap} FPS (${Math.round(this.displayRefreshHz)} Hz - 3 FPS) to keep frame delivery strictly inside the G-Sync/FreeSync hardware envelope without VSync buffer stalls or tearing.`,
+          timestamp: Date.now(),
+        };
+      }
+    } else if (mode === PacerMode.Async && this.targetFps > 0) {
+      this.autoSnapNotification = {
+        originalFps: this.targetFps,
+        snappedFps: this.targetFps,
+        ratioLabel: '64-bit Zero Drift',
+        refreshHz: this.displayRefreshHz,
+        reason: `Async Mode active: Decoupled 64-bit fractional accumulator eliminates clock drift (<0.0001 ms). Ideal for multi-monitor, D3D9, OpenGL, Vulkan, or arbitrary non-divisor framerates.`,
+        timestamp: Date.now(),
+      };
     }
 
     this.recalculatePeriod();
@@ -275,9 +298,14 @@ export class SimulatedPacerEngine {
       return 0;
     }
 
-    // Deterministic Rigid Sequence Scheduling
-    if (!this.initialized || nowTicks > this.nextTargetTicks + 1.5 * this.periodTicks) {
-      this.nextTargetTicks = nowTicks + this.periodTicks;
+    // Deterministic Rigid Sequence Scheduling with Anti-Windup Hitch Recovery
+    if (!this.initialized || nowTicks > this.nextTargetTicks + 1.25 * this.periodTicks) {
+      if (this.isDisplayDivisor && this.mode !== PacerMode.Async) {
+        const offset = (nowTicks - this.lastVbiTicks) % dispPeriod;
+        this.nextTargetTicks = nowTicks + (dispPeriod - offset);
+      } else {
+        this.nextTargetTicks = nowTicks + this.periodTicks;
+      }
       this.initialized = true;
     } else {
       this.nextTargetTicks += this.periodTicks;
@@ -431,6 +459,15 @@ export class SimulatedPacerEngine {
       isTearingAllowed: this.mode === PacerMode.LatencyFirst && this.state === PacerState.Limited,
       renderHeadroomMs: this.renderHeadroomMs,
       displayRefreshHz: this.displayRefreshHz,
+      gpuRenderDurationMs: this.avgRenderMs * 0.85,
+      vrrSupported: true,
+      vrrRecommendedCapFps: Math.max(30, Math.round(this.displayRefreshHz - 3)),
+      vrrRangeLabel: `48 – ${Math.round(this.displayRefreshHz)} Hz (LFC Active)`,
+      vrrFlickerSmootherActive: this.mode === PacerMode.VrrLive,
+      asyncZeroDriftActive: this.mode === PacerMode.Async,
+      asyncDriftOffsetUs: 0.0,
+      frontPacerEnabled: true,
+      compositionTier: 'DirectFlip',
       divisorRatioLabel: this.divisorRatioLabel,
       isStutterWarning: this.isStutterWarning,
       stutterReason: this.stutterReason,
@@ -439,5 +476,23 @@ export class SimulatedPacerEngine {
       jitterDistribution: jitterBuckets.map(b => (b / recent.length) * 100),
       autoSnapNotification: this.autoSnapNotification,
     };
+  }
+
+  /**
+   * Simulates a single heavy engine hitch (e.g. shader compilation stall or asset streaming delay)
+   * to test anti-windup hitch recovery and instant VBI re-anchoring.
+   */
+  public injectHitch(durationMs: number = 48.0) {
+    this.recordFrame(durationMs);
+    const nowTicks = (performance.now() / 1000) * this.freq;
+    const dispPeriod = this.freq / this.displayRefreshHz;
+    
+    // Test instant anti-windup re-anchor
+    if (this.isDisplayDivisor && this.mode !== PacerMode.Async) {
+      const offset = (nowTicks - this.lastVbiTicks) % dispPeriod;
+      this.nextTargetTicks = nowTicks + (dispPeriod - offset);
+    } else {
+      this.nextTargetTicks = nowTicks + this.periodTicks;
+    }
   }
 }

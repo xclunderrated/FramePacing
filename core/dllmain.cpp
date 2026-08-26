@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 // PacerCore.dll entry. The injector forces a LoadLibraryW inside the game
 // process; everything heavy happens on our own worker thread, never under
 // loader lock.
@@ -23,8 +23,13 @@ static volatile bool g_stop = false;
 // Unhooks and frees this DLL from a one-shot thread. Called only from
 // worker_main when dormancy decides we injected into a non-game.
 static DWORD WINAPI self_eject(LPVOID) {
+    PLOG("Executing graceful self-ejection sequence...");
+    g_stop = true;
     hooks_uninstall();
+    ctx_shutdown();
     shm_close();
+    timeEndPeriod(1);
+    PLOG("Self-ejection complete. Unloading module safely.");
     FreeLibraryAndExitThread(g_self, 0);
 }
 
@@ -34,6 +39,9 @@ static DWORD WINAPI worker_main(LPVOID) {
     const std::uint32_t pid = GetCurrentProcessId();
     shm_create(pid);
     ctx_init();
+
+    // Fast-trigger named ejection event for instant, sub-millisecond response
+    HANDLE eject_event = CreateEventW(nullptr, FALSE, FALSE, eject_event_name(pid).c_str());
 
     // Safe Lazy Hook Arming:
     // Only install hooks for APIs that the host process has actually loaded.
@@ -69,7 +77,13 @@ static DWORD WINAPI worker_main(LPVOID) {
     std::uint64_t unlimited_since = 0;
 
     while (!g_stop) {
-        Sleep(250);
+        DWORD wait_res = WAIT_TIMEOUT;
+        if (eject_event) {
+            wait_res = WaitForSingleObject(eject_event, 200);
+        } else {
+            Sleep(200);
+        }
+
         ctx_tick_watch();
         loader_watch_poll();
 
@@ -88,6 +102,7 @@ static DWORD WINAPI worker_main(LPVOID) {
             if (unlimited_since == 0) unlimited_since = now;
             else if (now - unlimited_since > 2 * freq) {
                 PLOG("eject requested (limiter stopped) -> self-eject");
+                if (eject_event) CloseHandle(eject_event);
                 HANDLE t = CreateThread(nullptr, 0, self_eject, nullptr, 0, nullptr);
                 if (t) CloseHandle(t);
                 break;
@@ -98,9 +113,10 @@ static DWORD WINAPI worker_main(LPVOID) {
         bool dormant = (lp == 0) ? ((now - start_qpc) > 30 * freq) : ((now - lp) > 30 * freq);
 
         // Hygiene channel: tools/uninstaller can ask any core to eject itself.
-        bool exit_req = shm_exit_requested();
+        bool exit_req = shm_exit_requested() || (wait_res == WAIT_OBJECT_0);
         if (exit_req || (dormant && st == PacerState_Unlimited && !g_stop)) {
             PLOG("eject requested (%s) -> self-eject", exit_req ? "explicit" : "dormant");
+            if (eject_event) CloseHandle(eject_event);
             HANDLE t = CreateThread(nullptr, 0, self_eject, nullptr, 0, nullptr);
             if (t) CloseHandle(t);
             break;

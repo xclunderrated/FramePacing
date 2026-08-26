@@ -401,10 +401,18 @@ void show_hamburger_menu(HWND hwnd, int x, int y) {
     AppendMenuW(m, MF_POPUP, (UINT_PTR)fps_menu, L"Target FPS");
 
     HMENU mode_menu = CreatePopupMenu();
+    AppendMenuW(mode_menu, MF_STRING, 2010, L"Front-edge (VSYNC)");
     AppendMenuW(mode_menu, MF_STRING, 2003, L"VRR Live (Adaptive)");
     AppendMenuW(mode_menu, MF_STRING, 2004, L"Async (Compat)");
-    UINT active_mode_cmd = (g_settings_mode == pacer::PacerMode_VrrLive) ? 2003 : 2004;
-    CheckMenuItem(mode_menu, active_mode_cmd, MF_CHECKED);
+    AppendMenuW(mode_menu, MF_STRING, 2011, L"Latent Sync (Low Latency)");
+    UINT active_mode_cmd = 0;
+    switch (g_settings_mode) {
+        case pacer::PacerMode_DisplayLocked:  active_mode_cmd = 2010; break;
+        case pacer::PacerMode_VrrLive:        active_mode_cmd = 2003; break;
+        case pacer::PacerMode_Async:          active_mode_cmd = 2004; break;
+        case pacer::PacerMode_LatencyFirst:   active_mode_cmd = 2011; break;
+    }
+    if (active_mode_cmd) CheckMenuItem(mode_menu, active_mode_cmd, MF_CHECKED);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)mode_menu, L"Pacing Mode");
 
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -451,6 +459,16 @@ void show_hamburger_menu(HWND hwnd, int x, int y) {
     }
     else if (cmd == 2004) {
         g_current_mode = pacer::PacerMode_Async;
+        g_settings_mode = g_current_mode; svc::set_mode(g_current_mode);
+        if (g_shm_box.valid()) g_shm_box.shm->ctl.mode = g_current_mode;
+    }
+    else if (cmd == 2010) {
+        g_current_mode = pacer::PacerMode_DisplayLocked;
+        g_settings_mode = g_current_mode; svc::set_mode(g_current_mode);
+        if (g_shm_box.valid()) g_shm_box.shm->ctl.mode = g_current_mode;
+    }
+    else if (cmd == 2011) {
+        g_current_mode = pacer::PacerMode_LatencyFirst;
         g_settings_mode = g_current_mode; svc::set_mode(g_current_mode);
         if (g_shm_box.valid()) g_shm_box.shm->ctl.mode = g_current_mode;
     }

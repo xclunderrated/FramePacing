@@ -1,10 +1,11 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "hook_dx9.h"
 
 #include <MinHook.h>
 #include <d3d9.h>
 
 #include "engine_context.h"
+#include "hooks_common.h"
 #include "log.h"
 
 namespace pacer {
@@ -21,21 +22,34 @@ PFN_Reset g_origReset = nullptr;
 HRESULT STDMETHODCALLTYPE Hooked_Present(IDirect3DDevice9* dev, const RECT* a, const RECT* b,
                                          HWND w, const RGNDATA* r) {
     if (!dev || !g_origPresent) return D3DERR_INVALIDCALL;
-
-    __try {
-        pre_present(PacerApi_D3D9, nullptr, false);
-        HRESULT hr = g_origPresent(dev, a, b, w, r);
-        post_present(PacerApi_D3D9, nullptr, false);
-        return hr;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (hooks_is_ejecting()) {
         return g_origPresent(dev, a, b, w, r);
     }
+
+    HookGuard guard;
+
+    return [&]() -> HRESULT {
+        __try {
+            pre_present(PacerApi_D3D9, nullptr, false);
+            HRESULT hr = g_origPresent(dev, a, b, w, r);
+            post_present(PacerApi_D3D9, nullptr, false);
+            return hr;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return g_origPresent(dev, a, b, w, r);
+        }
+    }();
 }
 
 HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp) {
+    if (!dev || !g_origReset) return D3DERR_INVALIDCALL;
+    if (hooks_is_ejecting()) {
+        return g_origReset(dev, pp);
+    }
+
+    HookGuard guard;
+
     PLOG("D3D9 Reset (swapchain resize) -- pacing re-anchors on next frame");
     ctx().engine.reanchor(qpc_now());
-    if (!dev || !g_origReset) return D3DERR_INVALIDCALL;
 
     // Latent Sync: force VSYNC OFF (immediate interval) so the frame shows at
     // the steered phase instead of being queued.
@@ -43,11 +57,13 @@ HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMET
         pp->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     }
 
-    __try {
-        return g_origReset(dev, pp);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return D3DERR_INVALIDCALL;
-    }
+    return [&]() -> HRESULT {
+        __try {
+            return g_origReset(dev, pp);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return D3DERR_INVALIDCALL;
+        }
+    }();
 }
 
 bool resolve_device_vtable(void*** vt_out) {

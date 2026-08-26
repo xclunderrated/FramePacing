@@ -69,8 +69,19 @@ struct SharedMemLayout {
     std::uint64_t ring[kRingCapacity];  // per-frame QPC interval deltas
 };
 
+inline constexpr wchar_t kEjectEventPrefix[] = L"Local\\Pacer.EjectEvent.";
+inline constexpr wchar_t kGlobalEjectEventPrefix[] = L"Global\\Pacer.EjectEvent.";
+
 inline std::wstring shm_name(std::uint32_t pid) {
     return std::wstring(kShmNamePrefix) + std::to_wstring(pid);
+}
+
+inline std::wstring eject_event_name(std::uint32_t pid) {
+    return std::wstring(kEjectEventPrefix) + std::to_wstring(pid);
+}
+
+inline std::wstring global_eject_event_name(std::uint32_t pid) {
+    return std::wstring(kGlobalEjectEventPrefix) + std::to_wstring(pid);
 }
 
 // ---- atomic double helpers over the volatile 64-bit fields ----

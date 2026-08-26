@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "shm.h"
 
 #include "log.h"

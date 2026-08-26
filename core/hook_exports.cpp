@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "hook_exports.h"
 
 #include <MinHook.h>
@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "engine_context.h"
+#include "hooks_common.h"
 #include "log.h"
 #include "shared/shm.h"
 
@@ -25,15 +26,22 @@ bool g_vulkan_armed = false;
 
 int __stdcall Hooked_vkQueuePresentKHR(void* queue, const void* present_info) {
     if (!queue || !g_origQueuePresentKHR) return 0;
-
-    __try {
-        pre_present(PacerApi_Vulkan, nullptr, false);
-        int r = g_origQueuePresentKHR(queue, present_info);
-        post_present(PacerApi_Vulkan, nullptr, false);
-        return r;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (hooks_is_ejecting()) {
         return g_origQueuePresentKHR(queue, present_info);
     }
+
+    HookGuard guard;
+
+    return [&]() -> int {
+        __try {
+            pre_present(PacerApi_Vulkan, nullptr, false);
+            int r = g_origQueuePresentKHR(queue, present_info);
+            post_present(PacerApi_Vulkan, nullptr, false);
+            return r;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return g_origQueuePresentKHR(queue, present_info);
+        }
+    }();
 }
 
 void* __stdcall Hooked_vkGetDeviceProcAddr(void* device, const char* pName) {
@@ -76,19 +84,24 @@ thread_local bool t_in_gl_present = false;
 
 static BOOL WINAPI present_gl_common(PFN_wglSwapBuffers orig, HDC hdc) {
     if (!orig) return FALSE;
+    if (hooks_is_ejecting()) return orig(hdc);
     if (t_in_gl_present) return orig(hdc);
 
-    __try {
-        t_in_gl_present = true;
-        pre_present(PacerApi_OpenGL, nullptr, false);
-        BOOL r = orig(hdc);
-        post_present(PacerApi_OpenGL, nullptr, false);
-        t_in_gl_present = false;
-        return r;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        t_in_gl_present = false;
-        return orig(hdc);
-    }
+    HookGuard guard;
+
+    return [&]() -> BOOL {
+        __try {
+            t_in_gl_present = true;
+            pre_present(PacerApi_OpenGL, nullptr, false);
+            BOOL r = orig(hdc);
+            post_present(PacerApi_OpenGL, nullptr, false);
+            t_in_gl_present = false;
+            return r;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            t_in_gl_present = false;
+            return orig(hdc);
+        }
+    }();
 }
 
 BOOL WINAPI Hooked_wglSwapBuffers(HDC hdc) {

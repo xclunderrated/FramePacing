@@ -485,7 +485,17 @@ bool is_excluded_system_app(const std::wstring& exe) {
         L"afterburner.exe"
     };
 
-    return kExclusions.count(exe) > 0;
+    if (kExclusions.count(exe) > 0) return true;
+
+    // Filter out common CEF, Chromium, and Crashpad helper child processes
+    if (exe.find(L"crashpad") != std::wstring::npos ||
+        exe.find(L"cefhost") != std::wstring::npos ||
+        exe.find(L"webhelper") != std::wstring::npos ||
+        exe.find(L"gameoverlay") != std::wstring::npos) {
+        return true;
+    }
+
+    return false;
 }
 
 struct Tracked {

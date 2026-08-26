@@ -53,6 +53,15 @@ export interface PacerTelemetry {
   isTearingAllowed: boolean;
   renderHeadroomMs: number;
   displayRefreshHz: number;
+  gpuRenderDurationMs?: number;
+  vrrSupported?: boolean;
+  vrrRecommendedCapFps?: number;
+  vrrRangeLabel?: string;
+  vrrFlickerSmootherActive?: boolean;
+  asyncZeroDriftActive?: boolean;
+  asyncDriftOffsetUs?: number;
+  frontPacerEnabled?: boolean;
+  compositionTier?: 'DirectFlip' | 'MPO' | 'Composed';
   divisorRatioLabel?: string;
   isStutterWarning: boolean;
   stutterReason?: string;

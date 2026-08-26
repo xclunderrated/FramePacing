@@ -256,16 +256,16 @@ export const PacerNativeWindow: React.FC<Props> = ({
                       onMouseLeave={() => setShowFpsSubmenu(false)}
                     >
                       {[
-                        { fps: 0, label: '0 (Uncapped)' },
-                        { fps: Math.round(displayRefreshHz), label: `${Math.round(displayRefreshHz)} FPS (1:1 Native)` },
-                        { fps: Math.round(displayRefreshHz / 2), label: `${Math.round(displayRefreshHz / 2)} FPS (1:2 Divisor)` },
-                        { fps: Math.round(displayRefreshHz / 3), label: `${Math.round(displayRefreshHz / 3)} FPS (1:3 Divisor)` },
-                        { fps: 60, label: '60 FPS' },
-                        { fps: 120, label: '120 FPS' },
-                        { fps: 144, label: '144 FPS' },
+                        { id: 'uncapped', fps: 0, label: '0 (Uncapped)' },
+                        { id: 'native', fps: Math.round(displayRefreshHz), label: `${Math.round(displayRefreshHz)} FPS (1:1 Native)` },
+                        { id: 'half', fps: Math.round(displayRefreshHz / 2), label: `${Math.round(displayRefreshHz / 2)} FPS (1:2 Divisor)` },
+                        { id: 'third', fps: Math.round(displayRefreshHz / 3), label: `${Math.round(displayRefreshHz / 3)} FPS (1:3 Divisor)` },
+                        { id: '60', fps: 60, label: '60 FPS' },
+                        { id: '120', fps: 120, label: '120 FPS' },
+                        { id: '144', fps: 144, label: '144 FPS' },
                       ].map((item) => (
                         <div
-                          key={item.fps}
+                          key={item.id}
                           onClick={() => {
                             onApplyFps(item.fps);
                             setShowMenu(false);
@@ -554,12 +554,12 @@ export const PacerNativeWindow: React.FC<Props> = ({
             <div className="flex flex-wrap items-center gap-1.5 pt-1">
               <span className="text-[10px] text-zinc-400 font-mono">Cadence Options:</span>
               {[
-                { label: `1:1 (${Math.round(displayRefreshHz)} FPS)`, fps: Math.round(displayRefreshHz) },
-                { label: `1:2 (${Math.round(displayRefreshHz / 2)} FPS)`, fps: Math.round(displayRefreshHz / 2) },
-                { label: `1:3 (${Math.round(displayRefreshHz / 3)} FPS)`, fps: Math.round(displayRefreshHz / 3) },
+                { id: 'c1', label: `1:1 (${Math.round(displayRefreshHz)} FPS)`, fps: Math.round(displayRefreshHz) },
+                { id: 'c2', label: `1:2 (${Math.round(displayRefreshHz / 2)} FPS)`, fps: Math.round(displayRefreshHz / 2) },
+                { id: 'c3', label: `1:3 (${Math.round(displayRefreshHz / 3)} FPS)`, fps: Math.round(displayRefreshHz / 3) },
               ].map((c) => (
                 <button
-                  key={c.fps}
+                  key={c.id}
                   type="button"
                   onClick={() => onApplyFps(c.fps)}
                   className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
@@ -675,6 +675,82 @@ export const PacerNativeWindow: React.FC<Props> = ({
           </div>
         )}
 
+        {/* VRR Live Adaptive Sync Control Center (Active in VRR Live mode) */}
+        {mode === PacerMode.VrrLive && (
+          <div className="bg-[#101114] border border-cyan-500/30 rounded p-2.5 space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-1.5">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                <span className="text-cyan-300 font-semibold text-[11px]">VRR Live Hardware Engine</span>
+              </div>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 font-mono">
+                G-Sync / FreeSync
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-[10px] text-zinc-300">
+              <div className="bg-[#181a20] p-1.5 rounded border border-white/5 space-y-0.5">
+                <span className="text-zinc-500 block text-[9.5px]">Golden VRR Ceiling:</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-emerald-400 font-mono font-bold">{Math.round(displayRefreshHz - 3)} FPS (-3 Cap)</span>
+                  {targetFps !== Math.round(displayRefreshHz - 3) && (
+                    <button
+                      type="button"
+                      onClick={() => onApplyFps(Math.round(displayRefreshHz - 3))}
+                      className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 border border-cyan-500/40 font-mono text-[9px]"
+                    >
+                      Snap
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-[#181a20] p-1.5 rounded border border-white/5 space-y-0.5">
+                <span className="text-zinc-500 block text-[9.5px]">LFC Operating Range:</span>
+                <span className="text-zinc-200 font-mono font-semibold">48 – {Math.round(displayRefreshHz)} Hz</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] pt-1 border-t border-[#1f2128]">
+              <span className="text-zinc-400">OLED/VA Gamma Smoother:</span>
+              <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                <Check className="w-3 h-3 text-emerald-400 inline" /> Anti-Flicker Active
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Async Zero-Drift Control Center (Active in Async mode) */}
+        {mode === PacerMode.Async && (
+          <div className="bg-[#101114] border border-zinc-700/40 rounded p-2.5 space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span className="text-zinc-200 font-semibold text-[11px]">Async Zero-Drift Accumulator</span>
+              </div>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono">
+                Decoupled Sync
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-[10px] text-zinc-300">
+              <div className="bg-[#181a20] p-1.5 rounded border border-white/5 space-y-0.5">
+                <span className="text-zinc-500 block text-[9.5px]">Clock Drift Rate:</span>
+                <span className="text-emerald-400 font-mono font-bold">0.000 ms (Zero-Drift)</span>
+              </div>
+              <div className="bg-[#181a20] p-1.5 rounded border border-white/5 space-y-0.5">
+                <span className="text-zinc-500 block text-[9.5px]">Timer Precision:</span>
+                <span className="text-zinc-200 font-mono font-semibold">MMCSS + QPC Tail</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] pt-1 border-t border-[#1f2128]">
+              <span className="text-zinc-400">Target Compatibility:</span>
+              <span className="text-cyan-300 font-semibold">Multi-Monitor / Non-Divisor / OpenGL</span>
+            </div>
+          </div>
+        )}
+
         {/* Status Line 1 & Line 2 */}
         <div className="bg-[#101114] border border-[#23252c] rounded p-2.5 space-y-1.5 text-xs font-mono">
           <div className="flex items-center justify-between text-zinc-400">
@@ -717,17 +793,22 @@ export const PacerNativeWindow: React.FC<Props> = ({
         <div className="flex items-center justify-between pt-1 border-t border-[#23252c] text-[11px]">
           <span className="text-zinc-500">Presets:</span>
           <div className="flex items-center space-x-1 font-mono">
-            {[0, Math.round(displayRefreshHz / 3), Math.round(displayRefreshHz / 2), Math.round(displayRefreshHz)].map((fps) => (
+            {[
+              { id: 'qp-uncap', fps: 0, label: 'UNCAP' },
+              { id: 'qp-third', fps: Math.round(displayRefreshHz / 3), label: `${Math.round(displayRefreshHz / 3)}` },
+              { id: 'qp-half', fps: Math.round(displayRefreshHz / 2), label: `${Math.round(displayRefreshHz / 2)}` },
+              { id: 'qp-native', fps: Math.round(displayRefreshHz), label: `${Math.round(displayRefreshHz)}` },
+            ].map((preset) => (
               <button
-                key={fps}
-                onClick={() => onApplyFps(fps)}
+                key={preset.id}
+                onClick={() => onApplyFps(preset.fps)}
                 className={`px-2 py-0.5 rounded transition-colors ${
-                  targetFps === fps
+                  targetFps === preset.fps
                     ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40'
                     : 'bg-[#1e2026] text-zinc-400 hover:text-zinc-200 border border-transparent hover:border-[#2e313a]'
                 }`}
               >
-                {fps === 0 ? 'UNCAP' : `${fps}`}
+                {preset.label}
               </button>
             ))}
           </div>

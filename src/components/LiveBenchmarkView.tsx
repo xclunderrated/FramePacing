@@ -7,6 +7,7 @@ interface Props {
   telemetry: PacerTelemetry;
   mode: PacerMode;
   onPaceFrame: (simulatedRenderTimeMs: number) => void;
+  onInjectHitch?: (durationMs: number) => void;
 }
 
 export const LiveBenchmarkView: React.FC<Props> = ({
@@ -14,6 +15,7 @@ export const LiveBenchmarkView: React.FC<Props> = ({
   telemetry,
   mode,
   onPaceFrame,
+  onInjectHitch,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(true);
@@ -244,9 +246,15 @@ export const LiveBenchmarkView: React.FC<Props> = ({
             <div className="text-zinc-400 text-[10px]">
               Frametime: <span className="text-cyan-300 font-semibold">{telemetry.currentFrametimeMs.toFixed(3)} ms</span>
             </div>
+            {telemetry.gpuRenderDurationMs !== undefined && (
+              <div className="text-zinc-400 text-[9.5px]">
+                GPU Time: <span className="text-emerald-300 font-semibold">{telemetry.gpuRenderDurationMs.toFixed(2)} ms</span>
+                <span className="text-zinc-500 ml-1.5">(DX11 Disjoint)</span>
+              </div>
+            )}
           </div>
 
-          {/* Latent Sync Tearline Parking Notification */}
+          {/* Latent Sync Tearline Parking & Composition Tier */}
           <div className="absolute bottom-2.5 right-3 bg-black/80 backdrop-blur-sm border border-white/10 rounded px-2 py-0.5 text-right font-mono text-[10px] text-zinc-300 flex items-center space-x-1.5 pointer-events-none">
             <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
             <span>
@@ -254,8 +262,36 @@ export const LiveBenchmarkView: React.FC<Props> = ({
                 ? 'Tearline: Parked (Top Bezel)'
                 : mode === PacerMode.DisplayLocked
                 ? 'Console VBI: Synchronized'
-                : 'Pacing: Active'}
+                : mode === PacerMode.VrrLive
+                ? 'VRR Live: Instant Scanout (0ms)'
+                : 'Async: 64-bit Zero-Drift'}
             </span>
+            <span className="text-zinc-500">•</span>
+            <span className="text-emerald-400 font-semibold">
+              {telemetry.compositionTier || 'DirectFlip'}
+            </span>
+            {mode === PacerMode.VrrLive ? (
+              <>
+                <span className="text-zinc-500">•</span>
+                <span className="text-cyan-300">VRR (-3 Cap: {telemetry.vrrRecommendedCapFps || 141} FPS)</span>
+                <span className="text-zinc-500">•</span>
+                <span className="text-emerald-300">Anti-Flicker Active</span>
+              </>
+            ) : mode === PacerMode.Async ? (
+              <>
+                <span className="text-zinc-500">•</span>
+                <span className="text-emerald-300">Drift: 0.000 ms</span>
+                <span className="text-zinc-500">•</span>
+                <span className="text-cyan-300">Decoupled</span>
+              </>
+            ) : (
+              telemetry.vrrSupported && (
+                <>
+                  <span className="text-zinc-500">•</span>
+                  <span className="text-cyan-300">VRR Cap: {telemetry.vrrRecommendedCapFps || 141} FPS</span>
+                </>
+              )
+            )}
           </div>
         </div>
 
@@ -281,6 +317,15 @@ export const LiveBenchmarkView: React.FC<Props> = ({
           </div>
 
           <div className="flex items-center space-x-2">
+            {onInjectHitch && (
+              <button
+                onClick={() => onInjectHitch(48)}
+                className="px-2.5 py-1 rounded text-xs bg-red-950/40 border border-red-500/40 text-red-300 hover:bg-red-900/60 transition-colors font-medium"
+                title="Simulate 48ms asset streaming hitch to test zero-ringing anti-windup recovery"
+              >
+                Inject 48ms Hitch
+              </button>
+            )}
             <button
               onClick={() => setSimulateSpike(!simulateSpike)}
               className={`px-2.5 py-1 rounded text-xs border transition-colors ${

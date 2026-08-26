@@ -28,7 +28,7 @@ public:
     DisplaySample current() const { return sample_; }
 
 private:
-    static constexpr size_t kHistCap = 61;
+    static constexpr size_t kHistCap = 121;
 
     double period_hist_[kHistCap]{};
     size_t hist_n_ = 0;

@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "hook_dxgi.h"
 
 #include <MinHook.h>
@@ -7,9 +7,15 @@
 #include <dxgi1_2.h>
 
 #include "engine_context.h"
+#include "front_pacer.h"
+#include "hooks_common.h"
+#include "loader_watch.h"
 #include "log.h"
 
 namespace pacer {
+
+volatile LONG g_in_flight_hooks = 0;
+volatile bool g_hooks_ejecting = false;
 
 namespace {
 
@@ -61,6 +67,11 @@ bool is_own_swapchain(IDXGISwapChain* sc) {
 
 HRESULT STDMETHODCALLTYPE Hooked_Present(IDXGISwapChain* sc, UINT sync, UINT flags) {
     if (!sc || !g_origPresent) return DXGI_ERROR_INVALID_CALL;
+    if (g_hooks_ejecting) {
+        return g_origPresent(sc, sync, flags);
+    }
+
+    HookGuard guard;
 
     UINT sync_out = sync;
     UINT flags_out = flags;
@@ -69,24 +80,39 @@ HRESULT STDMETHODCALLTYPE Hooked_Present(IDXGISwapChain* sc, UINT sync, UINT fla
         flags_out |= DXGI_PRESENT_ALLOW_TEARING;
     }
 
-    __try {
-        bool own = is_own_swapchain(sc);
-        pre_present(PacerApi_Dxgi, sc, own);
-        HRESULT hr = g_origPresent(sc, sync_out, flags_out);
-        if (FAILED(hr) && (flags_out & DXGI_PRESENT_ALLOW_TEARING)) {
-            // Swap chain may not have DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; fallback to original flags
-            hr = g_origPresent(sc, sync_out, flags);
+    return [&]() -> HRESULT {
+        __try {
+            bool own = is_own_swapchain(sc);
+
+            // Enforce maximum frame latency of 1 on flip swapchains to eliminate GPU queue elasticity
+            IDXGISwapChain2* sc2 = nullptr;
+            if (SUCCEEDED(sc->QueryInterface(__uuidof(IDXGISwapChain2), reinterpret_cast<void**>(&sc2))) && sc2) {
+                sc2->SetMaximumFrameLatency(1);
+                sc2->Release();
+            }
+
+            pre_present(PacerApi_Dxgi, sc, own);
+            HRESULT hr = g_origPresent(sc, sync_out, flags_out);
+            if (FAILED(hr) && (flags_out & DXGI_PRESENT_ALLOW_TEARING)) {
+                // Swap chain may not have DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; fallback to original flags
+                hr = g_origPresent(sc, sync_out, flags);
+            }
+            post_present(PacerApi_Dxgi, sc, own);
+            return hr;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return g_origPresent(sc, sync, flags);
         }
-        post_present(PacerApi_Dxgi, sc, own);
-        return hr;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return g_origPresent(sc, sync, flags);
-    }
+    }();
 }
 
 HRESULT STDMETHODCALLTYPE Hooked_Present1(IDXGISwapChain* sc, UINT sync, UINT flags,
                                           const DXGI_PRESENT_PARAMETERS* pp) {
     if (!sc || !g_origPresent1) return DXGI_ERROR_INVALID_CALL;
+    if (g_hooks_ejecting) {
+        return g_origPresent1(sc, sync, flags, pp);
+    }
+
+    HookGuard guard;
 
     UINT sync_out = sync;
     UINT flags_out = flags;
@@ -95,37 +121,54 @@ HRESULT STDMETHODCALLTYPE Hooked_Present1(IDXGISwapChain* sc, UINT sync, UINT fl
         flags_out |= DXGI_PRESENT_ALLOW_TEARING;
     }
 
-    __try {
-        bool own = is_own_swapchain(sc);
-        pre_present(PacerApi_Dxgi, sc, own);
-        HRESULT hr = g_origPresent1(sc, sync_out, flags_out, pp);
-        if (FAILED(hr) && (flags_out & DXGI_PRESENT_ALLOW_TEARING)) {
-            // Swap chain may not have DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; fallback to original flags
-            hr = g_origPresent1(sc, sync_out, flags, pp);
+    return [&]() -> HRESULT {
+        __try {
+            bool own = is_own_swapchain(sc);
+
+            IDXGISwapChain2* sc2 = nullptr;
+            if (SUCCEEDED(sc->QueryInterface(__uuidof(IDXGISwapChain2), reinterpret_cast<void**>(&sc2))) && sc2) {
+                sc2->SetMaximumFrameLatency(1);
+                sc2->Release();
+            }
+
+            pre_present(PacerApi_Dxgi, sc, own);
+            HRESULT hr = g_origPresent1(sc, sync_out, flags_out, pp);
+            if (FAILED(hr) && (flags_out & DXGI_PRESENT_ALLOW_TEARING)) {
+                // Swap chain may not have DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; fallback to original flags
+                hr = g_origPresent1(sc, sync_out, flags, pp);
+            }
+            post_present(PacerApi_Dxgi, sc, own);
+            return hr;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return g_origPresent1(sc, sync, flags, pp);
         }
-        post_present(PacerApi_Dxgi, sc, own);
-        return hr;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return g_origPresent1(sc, sync, flags, pp);
-    }
+    }();
 }
 
 HRESULT STDMETHODCALLTYPE Hooked_ResizeBuffers(IDXGISwapChain* sc, UINT count, UINT w, UINT h,
                                                 DXGI_FORMAT fmt, UINT flags) {
+    if (!sc || !g_origResizeBuffers) return DXGI_ERROR_INVALID_CALL;
+    if (g_hooks_ejecting) {
+        return g_origResizeBuffers(sc, count, w, h, fmt, flags);
+    }
+
+    HookGuard guard;
+
     PLOG("ResizeBuffers %ux%u (swapchain %p) -- re-anchoring display clock", w, h, sc);
     ctx().display.reset();
     ctx().engine.reanchor(qpc_now());
-    if (!sc || !g_origResizeBuffers) return DXGI_ERROR_INVALID_CALL;
 
     // Enable tearing capability on the swapchain so Latent Sync can present
     // VSYNC-OFF without DWM forcing vsync. Harmless for other modes.
     UINT flags_out = flags | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
-    __try {
-        return g_origResizeBuffers(sc, count, w, h, fmt, flags_out);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return DXGI_ERROR_INVALID_CALL;
-    }
+    return [&]() -> HRESULT {
+        __try {
+            return g_origResizeBuffers(sc, count, w, h, fmt, flags_out);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return DXGI_ERROR_INVALID_CALL;
+        }
+    }();
 }
 
 // Create a hidden dummy swapchain purely to read the class vtable locations.
@@ -211,10 +254,42 @@ bool hooks_install() {
 }
 
 void hooks_uninstall() {
+    PLOG("hooks_uninstall: initiating two-phase unhook sequence...");
+    g_hooks_ejecting = true;
+
+    // 1. Immediately unhook loader notification callback so ntdll never executes unloaded code
+    loader_watch_uninstall();
+
+    // 2. Unhook Windows message pump hooks
+    FrontPacer::uninstall();
+
+    // 3. Disable all active MinHook hooks
     MH_DisableHook(MH_ALL_HOOKS);
+
+    // 4. Wait for all in-flight hook invocations to drain to 0 across all threads
+    DWORD start_tick = GetTickCount();
+    while (InterlockedCompareExchange(&g_in_flight_hooks, 0, 0) > 0) {
+        if (GetTickCount() - start_tick > 1000) {
+            PLOG("hooks_uninstall: warning: in-flight hooks drain timeout reached (%ld remaining)", g_in_flight_hooks);
+            break;
+        }
+        Sleep(5);
+    }
+
+    // 5. Instruction pipeline margin: 40ms ensures any thread executing the RET instruction
+    // finishes transitioning out of PacerCore.dll code pages before module unmapping
+    Sleep(40);
+
+    // 6. Tear down MinHook
+    MH_Uninitialize();
+
+    // 7. Clean up display clock & dummy window
     ctx().display.reset();
-    if (g_dummy_hwnd) DestroyWindow(g_dummy_hwnd);
-    g_dummy_hwnd = nullptr;
+    if (g_dummy_hwnd) {
+        DestroyWindow(g_dummy_hwnd);
+        g_dummy_hwnd = nullptr;
+    }
+    PLOG("hooks_uninstall: unhook sequence completed safely.");
 }
 
 }  // namespace pacer

@@ -14,6 +14,13 @@ add_library(PacerCore SHARED
     loader_watch.h
     display_clock.cpp
     display_clock.h
+    gpu_query.cpp
+    gpu_query.h
+    vrr_detector.cpp
+    vrr_detector.h
+    mpo_observer.h
+    front_pacer.cpp
+    front_pacer.h
     pacing.cpp
     pacing.h
     shm.cpp

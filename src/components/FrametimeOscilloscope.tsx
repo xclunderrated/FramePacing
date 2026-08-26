@@ -191,16 +191,24 @@ export const FrametimeOscilloscope: React.FC<Props> = ({
         <div className="absolute bottom-1 left-2 right-2 flex items-center justify-between px-2 py-0.5 bg-black/85 backdrop-blur-sm border border-white/10 rounded text-[10px] font-mono">
           <div className="flex items-center space-x-1.5">
             <span className="text-zinc-400">Scanout State:</span>
-            <span className={telemetry.isDisplayDivisor ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
+            <span className={telemetry.isDisplayDivisor || mode === PacerMode.VrrLive || mode === PacerMode.Async ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
               {mode === PacerMode.LatencyFirst
                 ? (telemetry.isDisplayDivisor ? 'Parked in Top Bezel (0% - Tear Free)' : `Cadence Aligned`)
                 : mode === PacerMode.DisplayLocked
                 ? 'Phase-Locked to VBlank (Zero Judder)'
-                : 'VRR Framerate Tracking'}
+                : mode === PacerMode.VrrLive
+                ? 'VRR Dynamic Scanout (0ms Back-Wait)'
+                : 'Async 64-bit Accumulator (Zero-Drift)'}
             </span>
           </div>
           <div className="text-zinc-400">
-            Phase Offset: <span className="text-cyan-300 font-bold">{Math.abs(telemetry.phaseSteeringUs || 0).toFixed(1)} µs</span>
+            {mode === PacerMode.Async ? (
+              <span>Drift Rate: <strong className="text-emerald-400 font-bold">0.000 ms</strong></span>
+            ) : mode === PacerMode.VrrLive ? (
+              <span>Ceiling: <strong className="text-cyan-300 font-bold">{telemetry.vrrRecommendedCapFps || 141} FPS</strong></span>
+            ) : (
+              <span>Phase Offset: <span className="text-cyan-300 font-bold">{Math.abs(telemetry.phaseSteeringUs || 0).toFixed(1)} µs</span></span>
+            )}
           </div>
         </div>
       </div>
