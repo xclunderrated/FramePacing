@@ -1,0 +1,6 @@
+{
+  "name": "FramePacing",
+  "description": "Ultra-low jitter microsecond frame limiter, real-time pacing engine, and diagnostics inspector for DirectX, Vulkan, and OpenGL games",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
