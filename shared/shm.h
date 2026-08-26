@@ -57,7 +57,10 @@ struct ControlBlock {
 
     // Hygiene (M4): when set to 1, the core unhooks and frees itself.
     volatile std::uint32_t exit_requested;
-    std::uint32_t _reserved3;
+
+    // When set to 1 by a tool/UI, the core clears the frametime ring so that
+    // consistency stats (1% Low / 99th percentile) start from a fresh window.
+    volatile std::uint32_t stats_reset_requested;
 };
 
 struct SharedMemLayout {

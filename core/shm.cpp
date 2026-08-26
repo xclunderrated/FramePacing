@@ -41,7 +41,7 @@ bool shm_create(std::uint32_t pid) {
         // The service flips the elected target to Limited; observe-mode cores
         // that never present self-eject (see dllmain.cpp).
         g_shm->ctl.state = PacerState_Unlimited;
-        g_shm->ctl.mode = PacerMode_LatencyFirst;  // Latent Sync default: smooth + flat frametime, lower latency
+        g_shm->ctl.mode = PacerMode_VrrLive;  // VRR Live default: adaptive sync
         g_shm->ctl.api = PacerApi_Unknown;
         g_shm->ctl.pid = pid;
         LARGE_INTEGER f;
@@ -53,7 +53,7 @@ bool shm_create(std::uint32_t pid) {
         g_shm->ctl.last_vbi_qpc = 0;
         ctl_write_double(&g_shm->ctl.pll_phase_us_bits, 0.0);
         g_shm->ctl.exit_requested = 0;
-        g_shm->ctl._reserved3 = 0;
+        g_shm->ctl.stats_reset_requested = 0;
         g_shm->write_idx = 0;
     }
     return true;
@@ -103,6 +103,20 @@ void shm_publish_display(double measured_refresh_hz,
 
 bool shm_exit_requested() {
     return g_shm && g_shm->ctl.exit_requested != 0;
+}
+
+bool shm_stats_reset_requested() {
+    return g_shm && g_shm->ctl.stats_reset_requested != 0;
+}
+
+void shm_clear_stats_reset() {
+    if (g_shm) g_shm->ctl.stats_reset_requested = 0;
+}
+
+void shm_reset_ring() {
+    if (!g_shm) return;
+    memset((void*)g_shm->ring, 0, sizeof(g_shm->ring));
+    InterlockedExchange(&g_shm->write_idx, 0);
 }
 
 }  // namespace pacer

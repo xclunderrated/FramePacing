@@ -37,7 +37,7 @@ namespace {
 
 // ---------------------------------------------------------------- Layout
 constexpr int kBaseW = 368;
-constexpr int kBaseH = 246;
+constexpr int kBaseH = 276;
 
 HWND g_main = nullptr;
 HWND g_graph_wnd = nullptr;
@@ -68,17 +68,20 @@ std::wstring g_current_exe;
 DWORD g_current_pid = 0;
 DWORD g_prev_limited_pid = 0;  // last game we flipped to Limited (UI owns per-game shm)
 std::uint32_t g_current_api = 0;
-std::uint32_t g_current_mode = pacer::PacerMode_LatencyFirst;  // display echo from core
-std::uint32_t g_settings_mode = pacer::PacerMode_LatencyFirst;  // desired mode (UI writes to game shm)
+std::uint32_t g_current_mode = pacer::PacerMode_VrrLive;  // display echo from core
+std::uint32_t g_settings_mode = pacer::PacerMode_VrrLive;  // desired mode (UI writes to game shm)
 double g_delay_bias = 0.0;  // Latent Sync Delay Bias: 0=smooth/tear-stable .. 1=lowest latency
+double g_low1_fps = 0.0;    // 1% Low (avg FPS of worst 1% frames)
+double g_p99_fps = 0.0;     // 99th percentile FPS
 
 // Repaint gating: only redraw when displayed data actually changes (avoids
 // needless full-window repaints / wasted CPU while idle).
-std::wstring g_status_prev1, g_status_prev2;
+std::wstring g_status_prev1, g_status_prev2, g_status_prev3;
 LONG g_graph_prev_idx = -1;
 bool g_graph_prev_valid = false;
 
-void build_status_lines(wchar_t* l1, size_t l1n, wchar_t* l2, size_t l2n);
+void build_status_lines(wchar_t* l1, size_t l1n, wchar_t* l2, size_t l2n, wchar_t* l3, size_t l3n);
+void compute_pacing_lows(double* out_1low, double* out_p99);
 bool g_is_64bit = true;
 
 NOTIFYICONDATAW g_nid{};
@@ -398,32 +401,11 @@ void show_hamburger_menu(HWND hwnd, int x, int y) {
     AppendMenuW(m, MF_POPUP, (UINT_PTR)fps_menu, L"Target FPS");
 
     HMENU mode_menu = CreatePopupMenu();
-    AppendMenuW(mode_menu, MF_STRING, 2001, L"Latent Sync (Smooth + Low-Latency)");
-    AppendMenuW(mode_menu, MF_STRING, 2002, L"Console / Front-edge (VBI-PLL)");
     AppendMenuW(mode_menu, MF_STRING, 2003, L"VRR Live (Adaptive)");
     AppendMenuW(mode_menu, MF_STRING, 2004, L"Async (Compat)");
-    UINT active_mode_cmd = (g_settings_mode == pacer::PacerMode_LatencyFirst) ? 2001 :
-                           (g_settings_mode == pacer::PacerMode_DisplayLocked) ? 2002 :
-                           (g_settings_mode == pacer::PacerMode_VrrLive) ? 2003 : 2004;
+    UINT active_mode_cmd = (g_settings_mode == pacer::PacerMode_VrrLive) ? 2003 : 2004;
     CheckMenuItem(mode_menu, active_mode_cmd, MF_CHECKED);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)mode_menu, L"Pacing Mode");
-
-    // Delay Bias -- only meaningful in Latent Sync; greyed otherwise.
-    HMENU bias_menu = CreatePopupMenu();
-    AppendMenuW(bias_menu, MF_STRING, 5101, L"0% (Max Smooth / Safe)");
-    AppendMenuW(bias_menu, MF_STRING, 5102, L"25% Bias");
-    AppendMenuW(bias_menu, MF_STRING, 5103, L"50% Balanced");
-    AppendMenuW(bias_menu, MF_STRING, 5104, L"75% Low Latency");
-    AppendMenuW(bias_menu, MF_STRING, 5105, L"100% (Sub-frame Lag)");
-    UINT active_bias = (g_delay_bias <= 0.001) ? 5101
-                    : (g_delay_bias < 0.375)  ? 5102
-                    : (g_delay_bias < 0.625)  ? 5103
-                    : (g_delay_bias < 0.875)  ? 5104 : 5105;
-    CheckMenuItem(bias_menu, active_bias, MF_CHECKED);
-    UINT bias_flags = (g_settings_mode == pacer::PacerMode_LatencyFirst)
-                          ? MF_POPUP
-                          : (MF_POPUP | MF_GRAYED);
-    AppendMenuW(m, bias_flags, (UINT_PTR)bias_menu, L"Delay Bias");
 
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, autostart_get() ? (MF_STRING | MF_CHECKED) : MF_STRING, 3001, L"Start with Windows");
@@ -431,6 +413,7 @@ void show_hamburger_menu(HWND hwnd, int x, int y) {
     AppendMenuW(m, g_is_pinned ? (MF_STRING | MF_CHECKED) : MF_STRING, 3003, L"Always on Top");
 
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, 4003, L"Reset Stats");
     AppendMenuW(m, MF_STRING, 4001, L"Reset / Eject Core Hooks");
     AppendMenuW(m, MF_STRING, 4002, L"Exit");
 
@@ -438,7 +421,6 @@ void show_hamburger_menu(HWND hwnd, int x, int y) {
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD, x, y, 0, hwnd, nullptr);
     DestroyMenu(fps_menu);
     DestroyMenu(mode_menu);
-    DestroyMenu(bias_menu);
     DestroyMenu(m);
 
     if (cmd == 1000) apply_fps(0.0);
@@ -462,17 +444,7 @@ void show_hamburger_menu(HWND hwnd, int x, int y) {
         std::wstring eject_cmd = std::wstring(eject_exe) + L"pacer-eject.exe --all";
         _wsystem(eject_cmd.c_str());
     }
-    else if (cmd == 2001) {
-        g_current_mode = pacer::PacerMode_LatencyFirst;
-        g_settings_mode = g_current_mode; svc::set_mode(g_current_mode);
-        if (g_shm_box.valid()) g_shm_box.shm->ctl.mode = g_current_mode;
-    }
-    else if (cmd == 2002) {
-        g_current_mode = pacer::PacerMode_DisplayLocked;
-        g_settings_mode = g_current_mode; svc::set_mode(g_current_mode);
-        if (g_shm_box.valid()) g_shm_box.shm->ctl.mode = g_current_mode;
-    }
-    else if (cmd == 2003) {
+     else if (cmd == 2003) {
         g_current_mode = pacer::PacerMode_VrrLive;
         g_settings_mode = g_current_mode; svc::set_mode(g_current_mode);
         if (g_shm_box.valid()) g_shm_box.shm->ctl.mode = g_current_mode;
@@ -482,11 +454,12 @@ void show_hamburger_menu(HWND hwnd, int x, int y) {
         g_settings_mode = g_current_mode; svc::set_mode(g_current_mode);
         if (g_shm_box.valid()) g_shm_box.shm->ctl.mode = g_current_mode;
     }
-    else if (cmd == 5101) { g_delay_bias = 0.0;  svc::set_delay_bias(g_delay_bias); if (g_shm_box.valid()) pacer::ctl_write_double(&g_shm_box.shm->ctl.delay_bias_bits, g_delay_bias); }
-    else if (cmd == 5102) { g_delay_bias = 0.25; svc::set_delay_bias(g_delay_bias); if (g_shm_box.valid()) pacer::ctl_write_double(&g_shm_box.shm->ctl.delay_bias_bits, g_delay_bias); }
-    else if (cmd == 5103) { g_delay_bias = 0.5;  svc::set_delay_bias(g_delay_bias); if (g_shm_box.valid()) pacer::ctl_write_double(&g_shm_box.shm->ctl.delay_bias_bits, g_delay_bias); }
-    else if (cmd == 5104) { g_delay_bias = 0.75; svc::set_delay_bias(g_delay_bias); if (g_shm_box.valid()) pacer::ctl_write_double(&g_shm_box.shm->ctl.delay_bias_bits, g_delay_bias); }
-    else if (cmd == 5105) { g_delay_bias = 1.0;  svc::set_delay_bias(g_delay_bias); if (g_shm_box.valid()) pacer::ctl_write_double(&g_shm_box.shm->ctl.delay_bias_bits, g_delay_bias); }
+    else if (cmd == 4003) {
+        if (g_shm_box.valid()) g_shm_box.shm->ctl.stats_reset_requested = 1;
+        g_low1_fps = -1.0; g_p99_fps = -1.0;
+        g_status_prev3.clear();
+        InvalidateRect(g_main, nullptr, FALSE);
+    }
     else if (cmd == 4002) SendMessageW(hwnd, WM_CLOSE, 0, 0);
 }
 
@@ -550,13 +523,17 @@ void ui_tick() {
     svc::control_log_drain([](const std::wstring& s) { ui_log(s); });
     DWORD pid = svc::elected_pid();
     if (pid != g_current_pid) {
-        // Election changed: revert the previously-limited game to Unlimited.
-        // The UI (sharing the game's session) owns the per-game Local\ shm; the
-        // LocalSystem service in session 0 cannot open it cross-session.
-        if (g_prev_limited_pid != 0 && g_prev_limited_pid != pid) {
+        // Election changed: fully eject the framepacer from the game we're
+        // leaving so it isn't left hooked or limited in the background. The UI
+        // owns the per-game Local\ shm (the session-0 service can't open it),
+        // so signal the core to self-eject.
+        DWORD leaving_pid = g_current_pid;
+        if (leaving_pid != 0 && leaving_pid != pid) {
             pacer::ShmBox prev;
-            if (prev.open(g_prev_limited_pid, true))
+            if (prev.open(leaving_pid, true)) {
                 prev.shm->ctl.state = pacer::PacerState_Unlimited;
+                prev.shm->ctl.exit_requested = 1;  // core self-ejects
+            }
         }
         g_prev_limited_pid = pid;
         g_shm_box.close();
@@ -603,14 +580,17 @@ void ui_tick() {
             g_live_ms = (double)ticks / freq * 1000.0;
             g_live_fps = (g_live_ms > 0.001) ? (1000.0 / g_live_ms) : 0.0;
         }
+
+        compute_pacing_lows(&g_low1_fps, &g_p99_fps);
     }
 
     // Gate redraws: only repaint when displayed data actually changed.
-    wchar_t s1[160], s2[160];
-    build_status_lines(s1, _countof(s1), s2, _countof(s2));
-    if (s1 != g_status_prev1 || s2 != g_status_prev2) {
+    wchar_t s1[160], s2[160], s3[160];
+    build_status_lines(s1, _countof(s1), s2, _countof(s2), s3, _countof(s3));
+    if (s1 != g_status_prev1 || s2 != g_status_prev2 || s3 != g_status_prev3) {
         g_status_prev1 = s1;
         g_status_prev2 = s2;
+        g_status_prev3 = s3;
         InvalidateRect(g_main, nullptr, FALSE);
     }
 
@@ -624,7 +604,40 @@ void ui_tick() {
     }
 }
 
-void build_status_lines(wchar_t* l1, size_t l1n, wchar_t* l2, size_t l2n) {
+// Compute 1% Low (avg of worst 1% frames) and 99th-percentile FPS over the
+// recent frametime ring so the UI can surface real-world consistency.
+void compute_pacing_lows(double* out_1low, double* out_p99) {
+    *out_1low = -1.0;
+    *out_p99 = -1.0;
+    if (!g_shm_box.valid()) return;
+    double freq = (double)g_shm_box.shm->ctl.qpc_frequency;
+    if (freq <= 0.0) freq = 10.0e6;
+
+    LONG idx = g_shm_box.shm->write_idx;
+    int avail = (int)(idx > (LONG)pacer::kRingCapacity ? (LONG)pacer::kRingCapacity : idx);
+    if (avail < 20) return;
+
+    std::vector<double> fps;
+    fps.reserve(avail);
+    for (int i = 0; i < avail; ++i) {
+        LONG ri = idx - avail + i;
+        std::uint64_t ticks = g_shm_box.shm->ring[(std::uint32_t)ri & (pacer::kRingCapacity - 1)];
+        double ms = (double)ticks / freq * 1000.0;
+        if (ms > 0.001) fps.push_back(1000.0 / ms);
+    }
+    if (fps.empty()) return;
+
+    std::sort(fps.begin(), fps.end());  // ascending: worst frames first
+    int n = (int)fps.size();
+    int k = (std::max)(1, (int)(0.01 * n));  // worst 1% bucket
+    double s = 0.0;
+    for (int i = 0; i < k; ++i) s += fps[i];
+    *out_1low = s / (double)k;
+    int p = (std::min)(n - 1, (int)(0.01 * (n - 1)));  // 99% of frames are >= this
+    *out_p99 = fps[p];
+}
+
+void build_status_lines(wchar_t* l1, size_t l1n, wchar_t* l2, size_t l2n, wchar_t* l3, size_t l3n) {
     if (g_current_pid != 0) {
         swprintf_s(l1, l1n, L"%s: %s",
                    (g_target_fps > 0.0) ? L"Limiting" : L"Observing",
@@ -633,23 +646,19 @@ void build_status_lines(wchar_t* l1, size_t l1n, wchar_t* l2, size_t l2n) {
         swprintf_s(l1, l1n, L"Observing (no game presenting)");
     }
     if (g_current_pid != 0 && g_shm_box.valid()) {
-        if (g_current_mode == pacer::PacerMode_LatencyFirst) {
-            swprintf_s(l2, l2n, L"FPS: %.0f  |  %.2f ms  |  Latent Sync (%d%%)  |  %s",
-                       g_live_fps, g_live_ms, (int)std::round(g_delay_bias * 100.0),
-                       get_api_string(g_current_api, g_is_64bit));
-        } else {
-            swprintf_s(l2, l2n, L"FPS: %.0f  |  %.2f ms  |  %s  |  %s",
-                       g_live_fps, g_live_ms, get_mode_string(g_current_mode),
-                       get_api_string(g_current_api, g_is_64bit));
-        }
+        swprintf_s(l2, l2n, L"FPS: %.0f  |  %.2f ms  |  %s  |  %s",
+                    g_live_fps, g_live_ms, get_mode_string(g_current_mode),
+                    get_api_string(g_current_api, g_is_64bit));
     } else {
-        if (g_current_mode == pacer::PacerMode_LatencyFirst) {
-            swprintf_s(l2, l2n, L"FPS: --  |  -- ms  |  Latent Sync (%d%%)  |  Auto-Detect",
-                       (int)std::round(g_delay_bias * 100.0));
-        } else {
-            swprintf_s(l2, l2n, L"FPS: --  |  -- ms  |  %s  |  Auto-Detect",
-                       get_mode_string(g_current_mode));
-        }
+        swprintf_s(l2, l2n, L"FPS: --  |  -- ms  |  %s  |  Auto-Detect",
+                    get_mode_string(g_current_mode));
+    }
+
+    if (g_current_pid != 0 && g_shm_box.valid() && g_low1_fps > 0.0 && g_p99_fps > 0.0) {
+        swprintf_s(l3, l3n, L"1%% Low: %.0f FPS    |    99th: %.0f FPS",
+                    g_low1_fps, g_p99_fps);
+    } else {
+        swprintf_s(l3, l3n, L"1%% Low: --    |    99th: --");
     }
 }
 
@@ -691,7 +700,9 @@ void paint_main_window(HWND hwnd, HDC hdc) {
 
     wchar_t statusLine1[160];
     wchar_t statusLine2[160];
-    build_status_lines(statusLine1, _countof(statusLine1), statusLine2, _countof(statusLine2));
+    wchar_t statusLine3[160];
+    build_status_lines(statusLine1, _countof(statusLine1), statusLine2, _countof(statusLine2),
+                        statusLine3, _countof(statusLine3));
 
     RECT line1Rc{16, 56, W - 16, 76};
     DrawTextW(memDC, statusLine1, -1, &line1Rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -703,6 +714,10 @@ void paint_main_window(HWND hwnd, HDC hdc) {
     RECT line2Rc{16, 80, W - 16, 100};
     DrawTextW(memDC, statusLine2, -1, &line2Rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
+    // Line 3: 1% Low | 99th percentile FPS
+    RECT line3Rc{16, 104, W - 16, 124};
+    DrawTextW(memDC, statusLine3, -1, &line3Rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
     SelectObject(memDC, oldFont);
 
     // Blit to screen
@@ -713,6 +728,27 @@ void paint_main_window(HWND hwnd, HDC hdc) {
 }
 
 void main_close() {
+    // Eject every injected PacerCore instance so nothing stays hooked/limited
+    // after the UI exits.
+    {
+        wchar_t eject_exe[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, eject_exe, MAX_PATH);
+        wchar_t* s = wcsrchr(eject_exe, L'\\');
+        if (s) *(s + 1) = L'\0';
+        std::wstring eject_path = std::wstring(eject_exe) + L"pacer-eject.exe";
+        if (GetFileAttributesW(eject_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            std::wstring cmd = L"\"" + eject_path + L"\" --all";
+            std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+            buf.push_back(L'\0');
+            STARTUPINFOW si{sizeof(si)};
+            PROCESS_INFORMATION pi{};
+            if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                               DETACHED_PROCESS | CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                if (pi.hProcess) CloseHandle(pi.hProcess);
+                if (pi.hThread) CloseHandle(pi.hThread);
+            }
+        }
+    }
     tray_remove();
     svc::stop();
     PostQuitMessage(0);
@@ -926,9 +962,9 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
     // Subclass Edit Control for mouse wheel and Enter/Arrow key support
     g_orig_edit_proc = (WNDPROC)SetWindowLongPtrW(g_fps_edit, GWLP_WNDPROC, (LONG_PTR)edit_subclass_proc);
 
-    // --- 2. Live Frametime Graph (x=14, y=108, w=340, h=124) ---
+    // --- 2. Live Frametime Graph (x=14, y=132, w=340, h=124) ---
     g_graph_wnd = CreateWindowExW(0, L"FramepacerGraph", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-                                  14, 108, kBaseW - 28, 124, g_main, nullptr, hinst, nullptr);
+                                   14, 132, kBaseW - 28, 124, g_main, nullptr, hinst, nullptr);
 
     // Wire up the privileged injection service. The interactive UI owns
     // detection (window enumeration) and feeds candidates over the shared
@@ -944,16 +980,16 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int) {
         svc::Options opt;
         opt.fps = 60.0;
         opt.scan_ms = 200;
-        opt.mode = pacer::PacerMode_LatencyFirst;
+        opt.mode = pacer::PacerMode_VrrLive;
         svc::start(opt);
         svc::start_detection();
     }
-    g_settings_mode = pacer::PacerMode_LatencyFirst; svc::set_mode(g_settings_mode);
+    g_settings_mode = pacer::PacerMode_VrrLive; svc::set_mode(g_settings_mode);
     svc::set_delay_bias(g_delay_bias);  // 0.0 = Max Smooth
     tray_add();
 
     ShowWindow(g_main, SW_SHOW);
-    SetTimer(g_main, 1, 33, nullptr);  // ~30 Hz UI refresh
+    SetTimer(g_main, 1, 16, nullptr);  // ~60 Hz UI refresh
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {

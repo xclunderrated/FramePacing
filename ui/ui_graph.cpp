@@ -65,6 +65,14 @@ void FrametimeGraph::paint(HDC hdc, const RECT& client_rect, pacer::ShmBox& shm_
         stats_.measured_hz = pacer::ctl_read_double(&shm_box.shm->ctl.measured_refresh_hz_bits);
         stats_.api = shm_box.shm->ctl.api;
 
+        bool limited = stats_.is_limited;
+        Gdiplus::Color lineCol = limited ? Gdiplus::Color(GetRValue(colors::kGraphLineLimited),
+                                                           GetGValue(colors::kGraphLineLimited),
+                                                           GetBValue(colors::kGraphLineLimited))
+                                         : Gdiplus::Color(GetRValue(colors::kGraphLine),
+                                                           GetGValue(colors::kGraphLine),
+                                                           GetBValue(colors::kGraphLine));
+
         double target_ms = 1000.0 / stats_.target_fps;
         double max_ms = (std::max)(33.33, target_ms * 2.0);
 
@@ -72,6 +80,14 @@ void FrametimeGraph::paint(HDC hdc, const RECT& client_rect, pacer::ShmBox& shm_
             double clamped = (std::min)((std::max)(0.0, ms), max_ms);
             return (Gdiplus::REAL)(padT + graphH - 4 - (clamped / max_ms) * (graphH - 8));
         };
+
+        // Faint horizontal gridlines (33% / 66% of scale) for readability.
+        Gdiplus::Color hGridCol(GetRValue(colors::kGridLine), GetGValue(colors::kGridLine), GetBValue(colors::kGridLine));
+        Gdiplus::Pen hGridPen(hGridCol, 1.0f);
+        for (int f = 1; f <= 2; ++f) {
+            Gdiplus::REAL y = (Gdiplus::REAL)(padT + ((double)f / 3.0) * (graphH - 8) + 4);
+            g.DrawLine(&hGridPen, (Gdiplus::REAL)padL, y, (Gdiplus::REAL)(padL + graphW), y);
+        }
 
         LONG idx = shm_box.shm->write_idx;
         int avail = idx > (LONG)pacer::kRingCapacity ? (LONG)pacer::kRingCapacity : idx;
@@ -96,26 +112,43 @@ void FrametimeGraph::paint(HDC hdc, const RECT& client_rect, pacer::ShmBox& shm_
             stats_.current_ms = latest_ms;
             stats_.fps = (latest_ms > 0.001) ? (1000.0 / latest_ms) : 0.0;
 
-            // Subtle gradient fill under the frametime curve
+            // Subtle gradient fill under the frametime curve (tinted to match state)
             if (points.size() >= 2) {
                 std::vector<Gdiplus::PointF> fillPoly = points;
                 fillPoly.push_back(Gdiplus::PointF((Gdiplus::REAL)(padL + graphW), (Gdiplus::REAL)(padT + graphH - 4)));
                 fillPoly.push_back(Gdiplus::PointF((Gdiplus::REAL)padL, (Gdiplus::REAL)(padT + graphH - 4)));
 
+                Gdiplus::Color fillTop = limited ? Gdiplus::Color(45, 34, 197, 94)
+                                                 : Gdiplus::Color(35, 56, 189, 248);
+                Gdiplus::Color fillBot = limited ? Gdiplus::Color(0, 34, 197, 94)
+                                                 : Gdiplus::Color(0, 56, 189, 248);
                 Gdiplus::RectF gradRect((Gdiplus::REAL)padL, (Gdiplus::REAL)padT, (Gdiplus::REAL)graphW, (Gdiplus::REAL)graphH);
-                Gdiplus::LinearGradientBrush gradBrush(gradRect,
-                    Gdiplus::Color(35, 56, 189, 248),
-                    Gdiplus::Color(0, 56, 189, 248),
-                    Gdiplus::LinearGradientModeVertical);
+                Gdiplus::LinearGradientBrush gradBrush(gradRect, fillTop, fillBot,
+                                                       Gdiplus::LinearGradientModeVertical);
                 g.FillPolygon(&gradBrush, fillPoly.data(), (INT)fillPoly.size());
             }
 
-            // Draw Frametime Neon Waveform Line
-            Gdiplus::Color lineCol(56, 189, 248);
-            Gdiplus::Pen curvePen(lineCol, 1.5f);
+            // Soft glow underlay for a premium neon look
+            Gdiplus::Color glowCol = limited ? Gdiplus::Color(60, 34, 197, 94)
+                                             : Gdiplus::Color(60, 56, 189, 248);
+            Gdiplus::Pen glowPen(glowCol, 4.0f);
+            glowPen.SetLineJoin(Gdiplus::LineJoinRound);
+            g.DrawLines(&glowPen, points.data(), (INT)points.size());
+
+            // Crisp frametime waveform line
+            Gdiplus::Pen curvePen(lineCol, 1.6f);
             curvePen.SetLineJoin(Gdiplus::LineJoinRound);
             g.DrawLines(&curvePen, points.data(), (INT)points.size());
         }
+
+        // Target frametime reference line (dashed) so pacing flatness is obvious
+        Gdiplus::REAL targetY = ms_to_y(target_ms);
+        Gdiplus::Color targetCol = limited ? Gdiplus::Color(110, 34, 197, 94)
+                                           : Gdiplus::Color(90, 56, 189, 248);
+        Gdiplus::Pen targetPen(targetCol, 1.0f);
+        targetPen.SetDashStyle(Gdiplus::DashStyleDash);
+        g.DrawLine(&targetPen, (Gdiplus::REAL)padL, targetY,
+                   (Gdiplus::REAL)(padL + graphW), targetY);
     } else {
         // Idle flat baseline
         Gdiplus::Color lineCol(GetRValue(colors::kGraphLineIdle), GetGValue(colors::kGraphLineIdle), GetBValue(colors::kGraphLineIdle));

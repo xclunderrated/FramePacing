@@ -30,6 +30,14 @@ bool pre_present(std::uint32_t api, void* sc, bool is_dummy) {
     // Immediately poll and apply any dynamic configuration changes (FPS limit, mode, bias)
     ctx_tick_watch();
 
+    // Stats reset: clear the frametime ring so 1% Low / 99th percentile start
+    // from a fresh window. Cleared before any new interval is recorded.
+    if (shm_stats_reset_requested()) {
+        shm_reset_ring();
+        g_ctx.last_present_qpc = 0;  // avoid a spurious first-delta after reset
+        shm_clear_stats_reset();
+    }
+
     // Dynamic active swapchain & API tracking:
     // Seamlessly track resolution changes, splash->game transitions, and DLSS 3 Frame Gen swapchains.
     if (api == PacerApi_Dxgi && sc != nullptr) {

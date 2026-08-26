@@ -33,7 +33,7 @@ private:
 };
 
 struct PacerConfig {
-    std::uint32_t mode = 3;  // PacerMode_LatencyFirst (Special K Latent sync default)
+    std::uint32_t mode = 2;  // PacerMode_VrrLive (adaptive sync default)
     double target_fps = 60.0;
     double delay_bias = 0.0; // Latency-First: 0 = front-heavy (tear-stable) .. 1 = back-heavy (lowest latency)
 };

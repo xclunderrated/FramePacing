@@ -21,4 +21,8 @@ void shm_publish_display(double measured_refresh_hz,
                          double pll_phase_us);
 bool shm_exit_requested();
 
+bool shm_stats_reset_requested();
+void shm_clear_stats_reset();
+void shm_reset_ring();
+
 }  // namespace pacer

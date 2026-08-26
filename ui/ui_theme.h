@@ -23,7 +23,8 @@ namespace colors {
     inline constexpr COLORREF kTextStats      = RGB(56, 189, 248);   // #38BDF8 (Vibrant Neon Cyan)
     inline constexpr COLORREF kTextMuted      = RGB(161, 161, 170);  // #A1A1AA (Neutral Grey)
 
-    inline constexpr COLORREF kGraphLine      = RGB(56, 189, 248);   // #38BDF8 (Neon Cyan Frametime line)
+    inline constexpr COLORREF kGraphLine      = RGB(56, 189, 248);   // #38BDF8 (Neon Cyan when observing)
+    inline constexpr COLORREF kGraphLineLimited = RGB(34, 197, 94);  // #22C55E (Vibrant Green when limiting)
     inline constexpr COLORREF kGraphLineIdle  = RGB(113, 113, 122);  // #71717A (Neutral Idle line)
 }
 
